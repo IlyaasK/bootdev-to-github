@@ -2,16 +2,76 @@
 
 ## what this project is
 
-auto-commits boot.dev lesson solutions to github on every passing submission.
-tampermonkey → cloudflare worker → github API. no local server, no CLI, fully serverless.
+Auto-commits boot.dev lesson solutions to GitHub on every passing submission.
+**Dual surface**: browser (tampermonkey) + CLI (shell wrapper) → cloudflare worker → github API.
+
+---
+
+## architecture
+
+```
+boot.dev browser (tampermonkey) ─┐
+                                 ├→ cloudflare worker → github API → IlyaasK/bootdev
+boot.dev CLI (zsh wrapper)  ─────┘
+```
+
+### browser path (tampermonkey)
+1. XHR intercept on `/v1/lessonRun` → caches code by `lessonUUID`
+2. XHR intercept on `/v1/lessons/{uuid}/$` → on `ResultSlug: "success"`, fires worker POST
+3. **Fetch fallback** (ticket 06): same intercept logic on `window.fetch` as backup
+4. **Dedupe guard**: in-memory Set prevents double-commits if both XHR and fetch fire
+5. **Metadata fetch** (ticket 04a): `getLessonMetadata(lessonUUID)` makes an async same-origin `fetch()` to `https://api.boot.dev/v1/static/lessons/{uuid}` using `origFetchRef` (unwrapped fetch). Returns `{ courseTitle, chapterTitle, lessonTitle, courseLanguage }` from `CourseTitle`, `ChapterTitle`, `Title`, `CourseLanguage` fields.
+6. `handleSubmitSuccess` is now `async` — awaits metadata before POSTing to worker. If metadata is `null`, logs skip message and returns without POSTing.
+7. **No `BOOTDEV_TOKEN` needed** — metadata resolved via authenticated boot.dev API call (ticket 04a)
+
+### CLI path (shell wrapper)
+1. User types `bootdev submit` as normal
+2. Shell function shadows the binary, captures stdout/stderr
+3. On `submit` + exit 0 + success marker → collects code files from lesson dir
+4. POSTs to worker with `source: "cli"`, `files: []`, and `cliLog`
+5. Worker writes each file + a `.cli-logs/` entry in one commit
+
+### worker path
+1. Receives POST with metadata + code/files
+2. Validates `ALLOWED_USER`, required metadata fields
+3. Routes to correct path: code commit, progress marker, or CLI multi-file
+4. Uses github API PUT /contents (SHA-based upsert) to create/update files
+
+---
+
+## file structure
+
+```
+bootdev-to-github/          ← this repo (docs + deployable code)
+  bootdev-worker.js         ← CF worker source — deploy to cloudflare workers
+  bootdev.user.js           ← tampermonkey script — install in browser
+  cli/install.sh            ← CLI wrapper installer
+  README.md                 ← setup instructions
+  AGENTS.md                 ← this file
+  tickets/                  ← work queue (done)
+  VERIFICATION.md           ← e2e runbook (ticket 07)
+
+IlyaasK/bootdev/            ← target github repo (auto-committed to)
+  learn-go/
+    variables-and-types/
+      creating-variables.go
+    functions/
+      multiple-return-values.go
+  learn-git/
+    ...
+  learn-python/
+    ...
+  learn-go/
+    interfaces/
+      .cli-logs/
+        type-assertions-2026-04-20T10-30-00Z.log
+```
 
 ---
 
 ## current state
 
-architecture is designed but **not yet tested end-to-end**. the user has the three files
-(README.md, bootdev-worker.js, bootdev.user.js) and setup instructions. next session
-likely starts with debugging or feature work.
+**All 7 tickets implemented.** Ready for end-to-end verification (ticket 07).
 
 ---
 
@@ -21,93 +81,71 @@ likely starts with debugging or feature work.
 |---|---|---|
 | `/v1/lessonRun` | POST | runs code in browser WASM sandbox. request body contains `files[].Content` (the actual code) and `lessonRun.lessonUUID` |
 | `/v1/lessons/{uuid}/` | POST | submit endpoint. response contains `ResultSlug: "success"` on pass, plus `LessonUUID`, `CourseUUID`, `UserUUID` |
-| `/v1/static/lessons/{uuid}` | GET | returns lesson metadata: `CourseTitle`, `ChapterTitle`, `Title` (lesson title). used by worker to build file path |
+| `/v1/static/lessons/{uuid}` | GET | returns lesson metadata: `CourseTitle`, `ChapterTitle`, `Title`, `CourseLanguage`. **CALLED BY TAMPERMONKEY** via same-origin fetch from browser path — metadata resolved client-side before worker POST |
 | `/v1/viewContent` | POST | page view ping. only has `path`, no useful metadata |
 
-**key insight**: code is in `lessonRun` request, pass signal is in the submit response.
-tampermonkey caches code from `lessonRun` keyed by `lessonUUID`, then fires on submit success.
-
-the boot.dev frontend uses XHR (not fetch), so `XMLHttpRequest.prototype.open/send` override works.
-confirmed via network tab — `Sec-Fetch-Mode: cors`, initiator is `BGMQXSrd.js`.
-
 ---
 
-## known issues / not yet handled
-
-- **boot.dev token expiry**: `BOOTDEV_TOKEN` in CF env is used to call `/v1/static/lessons/{uuid}`
-  for metadata. this token expires — unknown TTL. user needs to manually refresh it from devtools.
-  a better solution: store the metadata in the tampermonkey layer instead (boot.dev already sends
-  lesson/course/chapter info somewhere in the page — worth checking `viewContent` response or
-  the lesson page HTML/JS state). this would eliminate the need for `BOOTDEV_TOKEN` entirely.
-
-- **non-Go lessons**: file path currently hardcodes `.go` extension. boot.dev teaches Python, JS,
-  SQL etc. the `/v1/static/lessons/{uuid}` response likely includes a `CourseLanguage` field
-  (seen in a search result snippet: `"CourseLanguage":"git"`). use that to pick the right extension.
-
-- **non-code lessons**: multiple choice, reading, and quiz lessons have no code to commit.
-  `lessonRun` won't fire for these — the submit hook will still fire but `codeCache[lessonUUID]`
-  will be undefined, falling back to `"// no code captured"`. options:
-  1. skip commit entirely if no code cached (check for falsy code before POSTing to worker)
-  2. commit a markdown file with the lesson title as a progress marker
-
-- **WASM lessons**: some lessons run Go in the browser via WASM (`go_worker.js` visible in network tab).
-  these still go through `lessonRun` with files in the body — should work fine, but verify.
-
-- **test file inclusion**: currently only commits `main.go`. the request body has all files
-  (`main.go`, `main_test.go`, `main_js_test.go`). could commit all of them or just solution file.
-  user's call.
-
-- **tampermonkey on boot.dev load**: the XHR override is injected at `document-start` which is
-  correct, but if boot.dev ever switches from XHR to native `fetch()`, the override breaks.
-  worth adding a `fetch` intercept as a fallback.
-
----
-
-## architecture decisions made (and why)
-
-- **cloudflare worker over localhost server**: user is on F-1 visa, building portfolio signal.
-  wants commits visible on github without running anything locally. CF free tier is plenty.
-
-- **cloudflare worker over VPS**: no infra to manage, free, auto-TLS. VPS rejected bc overhead.
-
-- **XHR intercept over browser extension**: tampermonkey is faster to ship. native messaging
-  for a full extension adds manifest v3 complexity for no benefit here.
-
-- **github API (PUT /contents) over git CLI**: worker is serverless, can't exec shell.
-  PUT /contents handles create + update in one call (SHA-based upsert).
-
----
-
-## env vars the worker needs
+## env vars the worker needs (CF dashboard)
 
 ```
-GITHUB_TOKEN   fine-grained PAT, contents: read+write on bootdev-progress repo
-GITHUB_OWNER   github username
-GITHUB_REPO    bootdev-progress (or whatever the repo is named)
-BOOTDEV_TOKEN  Bearer token from Authorization header on any api.boot.dev request
+GITHUB_TOKEN   fine-grained PAT, contents: read+write on IlyaasK/bootdev repo
+GITHUB_OWNER   github username (e.g. IlyaasK)
+GITHUB_REPO    bootdev
 ALLOWED_USER   boot.dev userUUID — a3aefe24-9252-45f1-8f67-696be634dc91
 ```
 
-all should be encrypted in CF dashboard.
+**No `BOOTDEV_TOKEN` needed anymore.** All metadata flows through the POST body from tampermonkey.
+
+All values should be encrypted in CF dashboard.
 
 ---
 
-## suggested next features (in priority order)
+## CLI wrapper env vars (shell)
 
-1. **fix token dependency**: extract metadata from tampermonkey layer, not worker.
-   send `courseTitle`, `chapterTitle`, `lessonTitle` in the POST body so worker
-   doesn't need to call boot.dev API at all. eliminates `BOOTDEV_TOKEN` env var.
+```
+WORKER_URL     your cloudflare worker URL
+USER_UUID      your boot.dev userUUID
+```
 
-2. **language detection**: use `CourseLanguage` from lesson metadata to pick file extension.
-   mapping: `go` → `.go`, `python` → `.py`, `javascript` → `.js`, `sql` → `.sql`, `bash` → `.sh`
+Set in `~/.zshrc` or source the wrapper with these exported.
 
-3. **skip no-code lessons**: before POSTing to worker, check `if (!code || code === "// no code captured") return;`
+---
 
-4. **progress dashboard**: build a simple github pages site on this repo that reads the
-   commit history and renders a heatmap / course progress tracker. purely frontend, no backend.
+## language detection map (worker)
 
-5. **commit message format**: current format is `feat(learn-go): lesson-title`.
-   consider conventional commits with chapter: `feat(learn-go/interfaces): type-assertions`
+```js
+const LANGUAGE_EXT = {
+  go: ".go",
+  python: ".py",
+  javascript: ".js",
+  typescript: ".ts",
+  sql: ".sql",
+  bash: ".sh",
+  shell: ".sh",
+  git: ".sh",
+};
+// unknown → ".txt" with console.warn
+```
+
+---
+
+## commit message formats
+
+| source | format |
+|---|---|
+| browser (code) | `feat(learn-go): type-assertions` |
+| browser (progress) | `progress(learn-go): quiz-chapter-3` |
+| CLI | `feat(learn-go): type-assertions` (files + `.cli-logs/`) |
+
+---
+
+## known limitations
+
+- **Metadata via authenticated API**: metadata from tampermonkey comes from `GET /v1/static/lessons/{uuid}` on `api.boot.dev`. The browser auto-attaches the user's auth cookies. If the API shape changes (field names), `getLessonMetadata()` will return wrong/missing fields and the worker will commit with bad paths. This is intentional — it surfaces the issue rather than silently committing with "unknown-course" paths.
+- **CLI metadata**: the CLI wrapper now resolves course/chapter/lesson titles via `GET /v1/static/lessons/{uuid}` using the auth token from boot.dev's viper config (`~/.config/bootdev/viper-config.yaml` or `~/.bootdev/viper-config.yaml`). Depends on `jq` being installed. If the viper config path or token field name changes, resolution fails silently (wrapper prints a warning).
+- **WASM lessons**: should work fine through the XHR path — `lessonRun` still fires with files in the body.
+- **Test file inclusion**: browser path only commits `main.go` (first file). CLI path commits all source files found in the lesson directory.
 
 ---
 

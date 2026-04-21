@@ -1,69 +1,57 @@
 # tickets
 
-work queue for the local AI. I (the orchestrator agent running in Claude Code) wrote these.
-local AI runs one ticket at a time; on completion, paste the diff / summary back to the
-orchestrator and we decide whether to merge and what's next.
+work queue for the local AI. follow-up round after the first batch (01–07) landed.
 
-## recommended order
+## status of the first batch
 
-the tickets are numbered, but the *logical* dependency order matters more than the numbers:
+| # | title | outcome |
+|---|---|---|
+| 01 | rename repo to `bootdev` | ✅ merged |
+| 02 | language detection | ✅ merged |
+| 03 | skip non-code lessons | ✅ merged |
+| 04 | move metadata to tampermonkey | ❌ shipped broken — see 04a |
+| 05 | bootdev CLI wrapper | ❌ shipped broken — see 05a |
+| 06 | fetch fallback + dedupe | ❌ dedupe broken — see 06a |
+| 07 | verification runbook | ✅ merged |
 
-```
-01 (repo rename)                   ← pure text, no behavior change, do first
- │
- ├─ 02 (language detection)        ← worker-only, safe to land solo
- │    │
- │    └─ 03 (skip non-code)        ← depends on 02's path-building changes
- │
- ├─ 04 (move metadata to client)   ← touches worker + tampermonkey; absorb 02's map-plumbing
- │    │
- │    └─ 05 (CLI wrapper)          ← reuses 04's POST shape; adds multi-file + log support
- │
- └─ 06 (fetch fallback)            ← independent, defensive; land any time
+until 04a and 05a land, the end-to-end system is non-functional (browser 400s on every
+submit, CLI double-encodes files). 06a is lower severity (produces duplicate commits
+under races) but quick to fix.
 
-07 (verification runbook)           ← land after 01+02+03+04 are merged; update as more ship
-```
-
-a lean path to "working end-to-end for the user's stated goal":
-**01 → 02 → 04 → 07 → 05 → 03 → 06**.
-
-## ticket index
+## this batch
 
 | # | title | scope | risk |
 |---|---|---|---|
-| 01 | rename repo to `bootdev` | README + AGENTS text | low |
-| 02 | language detection → correct file extension | worker | low |
-| 03 | skip non-code lessons (or mark as progress) | worker + tampermonkey | low |
-| 04 | move metadata to tampermonkey, drop `BOOTDEV_TOKEN` | worker + tampermonkey + docs | med |
-| 05 | `bootdev` CLI wrapper for local lessons | new zsh script + worker + docs | med-high |
-| 06 | `fetch()` fallback alongside XHR override | tampermonkey | low |
-| 07 | end-to-end verification runbook | new `VERIFICATION.md`, no source changes | low |
+| 04a | replace SPA state scrape with same-origin metadata fetch | tampermonkey + AGENTS.md | low |
+| 05a | fix CLI wrapper: encoding, recursion, metadata, output passthrough | `cli/install.sh` + README + AGENTS.md | med |
+| 06a | fix dedupe logic in submit-success handler | tampermonkey | low |
+| 05b | remove duplicate stdout replay left over from 05a | `cli/install.sh` | trivial |
+
+### recommended order
+
+```
+04a  ← unblocks browser path, smallest change
+ │
+ └─ 06a  ← independent but touches the same file; land right after 04a to minimize rebases
+ │
+05a   ← largest, independent of 04a/06a; can run in parallel
+```
+
+lean path to "system works end-to-end": **04a → 06a → 05a**.
 
 ## orchestration protocol
 
-for each ticket the local AI works on:
+same as last round:
 
-1. **orchestrator (this agent) hands off** the ticket filename + any updated context.
-2. **local AI implements** — reads the ticket, makes the changes, runs any obvious sanity
-   checks.
-3. **local AI returns** to the orchestrator with:
-   - the diff (or a link to the branch / patch file)
-   - a one-paragraph summary of what changed and why
-   - any deviations from the ticket's acceptance criteria (and the reason)
-   - any new issues discovered that should become new tickets
-4. **orchestrator reviews**, asks clarifying questions if needed, and either:
-   - accepts → mark ticket done, move to the next one per dependency order
-   - rejects with comments → local AI iterates
-   - files follow-up tickets → adds them here before moving on
-5. once a ticket is accepted, mark it with a ✅ below or delete its file if you prefer a
-   clean queue.
+1. I hand off one ticket at a time.
+2. local AI implements per acceptance criteria, runs sanity checks.
+3. local AI returns diff + one-paragraph summary + any deviations + any new issues spotted.
+4. I review: accept, or reject with specific deltas, or spawn follow-up tickets.
+5. ticket is checked off here on acceptance.
 
 ## status
 
-- [ ] 01 — rename repo to `bootdev`
-- [ ] 02 — language detection
-- [ ] 03 — skip non-code lessons
-- [ ] 04 — move metadata to tampermonkey
-- [ ] 05 — bootdev CLI wrapper
-- [ ] 06 — fetch() fallback
-- [ ] 07 — end-to-end verification runbook
+- [x] 04a — same-origin metadata fetch
+- [x] 05a — CLI wrapper fixes (completed via 05b)
+- [x] 06a — dedupe fix
+- [x] 05b — remove duplicate stdout replay

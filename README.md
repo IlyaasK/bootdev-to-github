@@ -1,21 +1,18 @@
-# bootdev-progress
+# bootdev-to-github
 
-auto-commits boot.dev lesson solutions to github on every passing submission.
+Auto-commits boot.dev lesson solutions to GitHub on every passing submission.
 
 ```
 boot.dev (browser)
-  → tampermonkey intercepts XHR
+  → tampermonkey intercepts XHR + fetch
     → POST to cloudflare worker (HTTPS, free)
-      → fetches lesson metadata from boot.dev API
-        → commits solution to this repo via github API
+      → commits solution to IlyaasK/bootdev via github API
 ```
-
----
 
 ## repo structure
 
 ```
-bootdev-progress/
+bootdev/
   learn-go/
     variables-and-types/
       creating-variables.go
@@ -23,7 +20,9 @@ bootdev-progress/
       multiple-return-values.go
   learn-git/
     ...
-  README.md
+  learn-python/
+    ...
+  VERIFICATION.md
 ```
 
 ---
@@ -32,82 +31,80 @@ bootdev-progress/
 
 ### 1. github repo
 
-create this repo (already done if you're reading this).
+Create the target GitHub repo:
+- Go to [github.com/new](https://github.com/new)
+- Repository name: `bootdev`
+- Keep it **public** (for portfolio signal)
+- Do NOT initialize with README, .gitignore, or license
+- Click **Create repository**
 
-create a fine-grained personal access token:
-- github.com → settings → developer settings → personal access tokens → fine-grained tokens → generate new token
-- resource owner: your account
-- repository access: only `bootdev-progress`
-- permissions → repository permissions → **contents: read and write**
-- generate and copy the token — save it, you won't see it again
+### 2. github personal access token
 
----
+Create a fine-grained personal access token:
+- github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
+- Resource owner: your account
+- Repository access: only `bootdev`
+- Permissions → Repository permissions → **contents: read and write**
+- Generate and copy the token — save it, you won't see it again
 
-### 2. cloudflare worker
+### 3. cloudflare worker
 
-go to [workers.cloudflare.com](https://workers.cloudflare.com) → sign up (free) → dashboard.
+Go to [workers.cloudflare.com](https://workers.cloudflare.com) → sign up (free) → dashboard.
 
-**create worker:**
-- workers & pages → create → create worker
-- name it `bootdev-progress` or anything
-- click "edit code" → paste the contents of `bootdev-worker.js`
-- click deploy
+**Create worker:**
+- Workers & Pages → Create → Create Worker
+- Name it anything (e.g. `bootdev-to-github`)
+- Click "Edit code" → paste the contents of `bootdev-worker.js`
+- Click **Deploy**
 
-**set environment variables:**
-- go to the worker → settings → variables → add the following:
+**Set environment variables:**
+- Go to the worker → Settings → Variables & Secrets → add the following:
 
-| variable | value |
+| Variable | Value |
 |---|---|
-| `GITHUB_TOKEN` | your fine-grained PAT from step 1 |
-| `GITHUB_OWNER` | your github username |
-| `GITHUB_REPO` | `bootdev-progress` |
-| `BOOTDEV_TOKEN` | your boot.dev bearer token (see below) |
+| `GITHUB_TOKEN` | your fine-grained PAT from above |
+| `GITHUB_OWNER` | your github username (e.g. `IlyaasK`) |
+| `GITHUB_REPO` | `bootdev` |
 | `ALLOWED_USER` | your boot.dev userUUID (see below) |
 
-- click **encrypt** on each value before saving
-- click save and deploy
+Click **Save and deploy**.
 
-**getting `BOOTDEV_TOKEN` and `ALLOWED_USER`:**
-1. open boot.dev in firefox/chrome
-2. open devtools → network tab → filter by fetch/XHR
-3. click any lesson
-4. find any request to `api.boot.dev`
-5. click it → headers tab
-6. look for `Authorization: Bearer <token>` — copy everything after `Bearer `
-7. in the same request, check the request payload for `userUUID` — that's `ALLOWED_USER`
+**Getting `ALLOWED_USER`:**
+1. Open boot.dev in Firefox/Chrome
+2. Open devtools → Network tab → filter by fetch/XHR
+3. Click any lesson
+4. Find any request to `api.boot.dev`
+5. Click it → Headers tab
+6. In the same request, check the request payload for `userUUID` — that's `ALLOWED_USER`
 
-> ⚠️ the boot.dev token expires periodically. if commits stop working, repeat this step and update `BOOTDEV_TOKEN` in CF dashboard.
+**Copy your worker URL:**
+- It looks like `https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev`
+- Save it for step 4
 
-**copy your worker URL:**
-- it looks like `https://bootdev-progress.YOUR-SUBDOMAIN.workers.dev`
-- save it for step 4
+### 4. tampermonkey
 
----
+Install the Tampermonkey browser extension:
+- [Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
+- [Firefox](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
 
-### 3. tampermonkey
-
-install the tampermonkey browser extension:
-- [chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
-- [firefox](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
-
-**install the script:**
-- tampermonkey icon → dashboard → + (new script)
-- delete the default template
-- paste the contents of `bootdev.user.js`
-- find this line near the top:
+**Install the script:**
+- Tampermonkey icon → Dashboard → + (new script)
+- Delete the default template
+- Paste the contents of `bootdev.user.js`
+- Find this line near the top:
   ```js
   const WORKER_URL = "https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/";
   ```
-- replace with your actual worker URL from step 2
-- file → save (or ctrl+s)
+- Replace with your actual worker URL from step 3
+- File → Save (or Ctrl+S)
 
 ---
 
 ## testing
 
-### test the worker directly
+### Test the worker directly
 
-open terminal and run:
+Open terminal and run:
 
 ```bash
 curl -X POST https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/ \
@@ -116,56 +113,73 @@ curl -X POST https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/ \
     "userUUID": "YOUR_USER_UUID",
     "lessonUUID": "7af7c74b-99bb-4420-9fa4-275fb8ec7a5a",
     "courseUUID": "3b39d0f6-f944-4f1b-832d-a1daba32eda4",
+    "courseTitle": "learn-go",
+    "chapterTitle": "variables-and-types",
+    "lessonTitle": "creating-variables",
+    "courseLanguage": "go",
     "code": "package main\n\nfunc main() {}\n"
   }'
 ```
 
-expected response:
+Expected response:
 ```json
-{ "ok": true, "path": "learn-go/interfaces/...", "commit": "feat(learn-go): ..." }
+{ "ok": true, "path": "learn-go/variables-and-types/creating-variables.go", "commit": "feat(learn-go): creating-variables" }
 ```
 
-check the repo — a new file should appear within seconds.
+Check the repo — a new file should appear within seconds.
 
-if you get an error, check:
-- CF dashboard → worker → logs (real-time logs available under "observability")
-- the env vars are set correctly and encrypted values were saved
+If you get an error, check:
+- CF dashboard → Worker → Logs (real-time logs available under "Observability")
+- The env vars are set correctly
 
-### test the full flow
+### Test the full flow
 
-1. open boot.dev in the browser with tampermonkey enabled
-2. open devtools → console tab
-3. solve and **submit** (not just run) a lesson until it passes
-4. watch the console for:
+1. Open boot.dev in the browser with Tampermonkey enabled
+2. Open devtools → Console tab
+3. Solve and **submit** (not just run) a lesson until it passes
+4. Watch the console for:
    ```
    [bootdev→gh] feat(learn-go): your-lesson-title
    ```
-5. check this repo for the new commit
+5. Check the repo for the new commit
 
-### if nothing happens
+### If nothing happens
 
-- make sure you hit **submit** not just **run** — the hook fires on the submit endpoint, not lessonRun
-- check tampermonkey dashboard → the script should show as "enabled" on boot.dev
-- check console for `[bootdev→gh] error` messages
-- check CF worker logs for incoming requests
+- Make sure you hit **submit** not just **run** — the hook fires on the submit endpoint, not lessonRun
+- Check Tampermonkey dashboard → the script should show as "enabled" on boot.dev
+- Check console for `[bootdev→gh] error` messages
+- Check CF worker logs for incoming requests
 
 ---
 
-## token refresh
+## CLI submissions (optional)
 
-boot.dev tokens expire. when commits stop:
+The `bootdev` CLI can also auto-commit via a shell wrapper. See the [CLI install script](cli/install.sh) in this repo.
 
-1. open boot.dev → devtools → network tab
-2. find any `api.boot.dev` request → headers → copy the new `Authorization: Bearer ...` value
-3. CF dashboard → bootdev-progress worker → settings → variables → update `BOOTDEV_TOKEN`
-4. save and deploy
+**Prerequisites:** `jq` is required (install via `brew install jq`).
+
+**Setup:**
+```zsh
+# Export these before installing the wrapper
+export WORKER_URL="https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/"
+export USER_UUID="your-boot-dot-uuid-here"
+
+# Install the wrapper
+zsh cli/install.sh
+
+# Reload your shell
+source ~/.config/zsh/bootdev-wrap.zsh
+```
+
+The wrapper resolves lesson metadata (course/chapter/lesson title, language) automatically from the boot.dev API using your CLI's stored auth token.
 
 ---
 
 ## files
 
-| file | purpose |
+| File | Purpose |
 |---|---|
-| `bootdev-worker.js` | cloudflare worker source — deploy this |
-| `bootdev.user.js` | tampermonkey script — install this in browser |
-| `README.md` | this file |
+| `bootdev-worker.js` | Cloudflare Worker source — deploy this |
+| `bootdev.user.js` | Tampermonkey script — install in browser |
+| `cli/install.sh` | CLI wrapper installer (optional) |
+| `README.md` | This file |
