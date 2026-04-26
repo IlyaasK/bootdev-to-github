@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         bootdev → github commits
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @match        https://www.boot.dev/*
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
