@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         bootdev → github commits
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @match        https://www.boot.dev/*
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      localhost
 // @run-at       document-start
 // ==/UserScript==
@@ -11,17 +12,20 @@
 (function () {
   "use strict";
 
+  // With @grant directives, 'window' is Tampermonkey's sandbox — NOT the page's window.
+  // We must use unsafeWindow to patch the page's actual XHR and fetch.
+  const pageWindow = unsafeWindow;
+
   // ← local Go daemon URL
   const WORKER_URL = "http://localhost:8080/";
 
   // cache code from lessonRun keyed by lessonUUID
   const codeCache = {};
 
-  // save original fetch BEFORE wrapping — used for worker POSTs so we don't
-  // recursively call the wrapped version
-  const origFetchRef = window.fetch.bind(window);
+  // save original page fetch BEFORE wrapping
+  const origFetch = pageWindow.fetch.bind(pageWindow);
 
-  // dedupe guard: track lessonUUIDs that already fired a worker POST (ticket 06a)
+  // dedupe guard: prevent double-commits if both XHR and fetch fire
   const lastFired = new Map();
   const DEDUPE_WINDOW_MS = 10_000;
 
@@ -36,15 +40,13 @@
     return false;
   }
 
-  // ─── fetch() intercept (ticket 06) ───
-  const origFetch = window.fetch;
-  window.fetch = function (...args) {
+  // ─── fetch() intercept ───
+  pageWindow.fetch = function (...args) {
     const url = typeof args[0] === "string" ? args[0] : args[0]?.url || "";
     const method = (args[1]?.method || "GET").toUpperCase();
 
     // intercept lessonRun → cache code
     if (method === "POST" && url.includes("/v1/lessonRun")) {
-      const clone = args[0];
       if (args[1]?.body) {
         try {
           const data = JSON.parse(args[1].body);
@@ -60,8 +62,7 @@
       }
     }
 
-    return origFetch.apply(window, args).then((response) => {
-      // For fetch-based submit endpoints, check the response
+    return origFetch.apply(pageWindow, args).then((response) => {
       if (method === "POST" && /\/v1\/lessons\/[^/]+\/$/.test(url)) {
         const clone = response.clone();
         clone.json().then((res) => {
@@ -74,17 +75,17 @@
     });
   };
 
-  // ─── XHR intercept (original path) ───
-  const origOpen = XMLHttpRequest.prototype.open;
-  const origSend = XMLHttpRequest.prototype.send;
+  // ─── XHR intercept ───
+  const origOpen = pageWindow.XMLHttpRequest.prototype.open;
+  const origSend = pageWindow.XMLHttpRequest.prototype.send;
 
-  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+  pageWindow.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     this._method = method;
     this._url = url;
     return origOpen.call(this, method, url, ...rest);
   };
 
-  XMLHttpRequest.prototype.send = function (body) {
+  pageWindow.XMLHttpRequest.prototype.send = function (body) {
     const url = this._url || "";
     const method = this._method || "";
 
@@ -118,7 +119,7 @@
     return origSend.call(this, body);
   };
 
-  // ─── shared submit success handler (async — awaits metadata from boot.dev API) ───
+  // ─── shared submit success handler ───
   async function handleSubmitSuccess(res) {
     const lessonUUID = res.LessonUUID;
     const courseUUID = res.CourseUUID;
@@ -126,9 +127,10 @@
 
     if (isDeduped(lessonUUID)) return;
 
+    console.log(`[bootdev→gh] success intercepted for ${lessonUUID}`);
+
     const cachedCode = codeCache[lessonUUID];
 
-    // Build POST body with metadata (ticket 04: metadata from client via same-origin fetch)
     const postBody = {
       userUUID,
       lessonUUID,
@@ -136,14 +138,12 @@
     };
 
     if (cachedCode && cachedCode !== "// no code captured") {
-      // Code lesson: send the cached code
       postBody.code = cachedCode;
     } else {
-      // Non-code lesson: send progress marker request (ticket 03)
       postBody.kind = "progress";
     }
 
-    // Fetch metadata from boot.dev's authenticated API (ticket 04, option A)
+    // Fetch metadata via same-origin authenticated fetch
     const meta = await getLessonMetadata(lessonUUID);
     if (!meta) {
       console.log(`[bootdev→gh] skipped: metadata fetch failed for ${lessonUUID}`);
@@ -154,33 +154,34 @@
     postBody.lessonTitle = meta.lessonTitle;
     postBody.courseLanguage = meta.courseLanguage;
 
-    // Use GM_xmlhttpRequest to bypass Firefox Local Network Access blocking
-    // (fetch from https://boot.dev to http://localhost is blocked by the browser)
+    console.log(`[bootdev→gh] posting to daemon: ${meta.courseTitle} / ${meta.lessonTitle}`);
+
+    // GM_xmlhttpRequest bypasses browser Local Network Access blocking
     GM_xmlhttpRequest({
       method: "POST",
       url: WORKER_URL,
       headers: { "Content-Type": "application/json" },
       data: JSON.stringify(postBody),
-      onload: (res) => {
+      onload: (r) => {
         try {
-          const d = JSON.parse(res.responseText);
+          const d = JSON.parse(r.responseText);
           console.log("[bootdev→gh]", d.commit || d);
         } catch {
-          console.error("[bootdev→gh] bad response", res.responseText);
+          console.error("[bootdev→gh] bad response", r.responseText);
         }
       },
       onerror: (e) => console.error("[bootdev→gh] request failed", e),
     });
   }
 
-  // ─── fetch lesson metadata from boot.dev same-origin API (ticket 04, option A) ───
+  // ─── fetch lesson metadata from boot.dev API ───
   async function getLessonMetadata(lessonUUID) {
     try {
       const url = `https://api.boot.dev/v1/static/lessons/${lessonUUID}`;
-      const response = await origFetchRef(url);
+      const response = await origFetch(url);
 
       if (!response.ok) {
-        console.warn(`[bootdev→gh] metadata fetch non-2xx: ${response.status} for ${lessonUUID}`);
+        console.warn(`[bootdev→gh] metadata fetch non-2xx: ${response.status}`);
         return null;
       }
 
@@ -192,7 +193,7 @@
         courseLanguage: data.CourseLanguage,
       };
     } catch (e) {
-      console.warn(`[bootdev→gh] metadata fetch failed for ${lessonUUID}:`, e.message);
+      console.warn(`[bootdev→gh] metadata fetch failed:`, e.message);
       return null;
     }
   }
