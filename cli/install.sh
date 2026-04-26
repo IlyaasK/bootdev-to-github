@@ -9,7 +9,7 @@ WRAPPER_DIR="$HOME/.config/zsh"
 WRAPPER_FILE="$WRAPPER_DIR/bootdev-wrap.zsh"
 
 # ─── read env vars from user or default ───
-: "${WORKER_URL:?Set WORKER_URL to your cloudflare worker URL}"
+WORKER_URL="${WORKER_URL:-http://localhost:8080/}"
 : "${USER_UUID:?Set USER_UUID to your boot.dev userUUID}"
 
 # ─── create wrapper script ───

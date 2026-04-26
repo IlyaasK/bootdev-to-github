@@ -1,87 +1,51 @@
 # bootdev-to-github
 
-Auto-commits boot.dev lesson solutions to GitHub on every passing submission.
+Auto-commits boot.dev lesson solutions to a local GitHub repository on every passing submission.
 
 ```
 boot.dev (browser)
   → tampermonkey intercepts XHR + fetch
-    → POST to cloudflare worker (HTTPS, free)
-      → commits solution to IlyaasK/bootdev via github API
+    → POST to local Go daemon (http://localhost:8080)
+      → commits solution to local bootdev repo via git CLI
 ```
 
 ## repo structure
 
 ```
-bootdev/
+bootdev-to-github/      ← this repo (daemon + scripts)
+  local-server/         ← Go daemon
+  bootdev.user.js       ← tampermonkey script
+  cli/install.sh        ← CLI wrapper installer
+
+../bootdev/             ← your local target repo (auto-committed to)
   learn-go/
     variables-and-types/
       creating-variables.go
-    functions/
-      multiple-return-values.go
-  learn-git/
-    ...
-  learn-python/
-    ...
-  VERIFICATION.md
+  ...
 ```
 
 ---
 
 ## setup
 
-### 1. github repo
+### 1. target repo
 
-Create the target GitHub repo:
-- Go to [github.com/new](https://github.com/new)
-- Repository name: `bootdev`
-- Keep it **public** (for portfolio signal)
-- Do NOT initialize with README, .gitignore, or license
-- Click **Create repository**
+Ensure you have your target repository cloned locally. By default, the daemon looks for a directory named `bootdev` at the same level as this repository (`../bootdev`).
 
-### 2. github personal access token
+If your repository is located elsewhere, you can set the `TARGET_DIR` environment variable when running the daemon.
 
-Create a fine-grained personal access token:
-- github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
-- Resource owner: your account
-- Repository access: only `bootdev`
-- Permissions → Repository permissions → **contents: read and write**
-- Generate and copy the token — save it, you won't see it again
+### 2. local go daemon
 
-### 3. cloudflare worker
+The daemon listens for submissions and commits them to your local repository.
 
-Go to [workers.cloudflare.com](https://workers.cloudflare.com) → sign up (free) → dashboard.
+```bash
+cd local-server
+go run main.go
+```
 
-**Create worker:**
-- Workers & Pages → Create → Create Worker
-- Name it anything (e.g. `bootdev-to-github`)
-- Click "Edit code" → paste the contents of `bootdev-worker.js`
-- Click **Deploy**
+The server will start on `http://127.0.0.1:8080`. Leave this running in the background while you work on boot.dev.
 
-**Set environment variables:**
-- Go to the worker → Settings → Variables & Secrets → add the following:
-
-| Variable | Value |
-|---|---|
-| `GITHUB_TOKEN` | your fine-grained PAT from above |
-| `GITHUB_OWNER` | your github username (e.g. `IlyaasK`) |
-| `GITHUB_REPO` | `bootdev` |
-| `ALLOWED_USER` | your boot.dev userUUID (see below) |
-
-Click **Save and deploy**.
-
-**Getting `ALLOWED_USER`:**
-1. Open boot.dev in Firefox/Chrome
-2. Open devtools → Network tab → filter by fetch/XHR
-3. Click any lesson
-4. Find any request to `api.boot.dev`
-5. Click it → Headers tab
-6. In the same request, check the request payload for `userUUID` — that's `ALLOWED_USER`
-
-**Copy your worker URL:**
-- It looks like `https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev`
-- Save it for step 4
-
-### 4. tampermonkey
+### 3. tampermonkey
 
 Install the Tampermonkey browser extension:
 - [Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
@@ -91,23 +55,18 @@ Install the Tampermonkey browser extension:
 - Tampermonkey icon → Dashboard → + (new script)
 - Delete the default template
 - Paste the contents of `bootdev.user.js`
-- Find this line near the top:
-  ```js
-  const WORKER_URL = "https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/";
-  ```
-- Replace with your actual worker URL from step 3
 - File → Save (or Ctrl+S)
 
 ---
 
 ## testing
 
-### Test the worker directly
+### Test the daemon directly
 
-Open terminal and run:
+Open a terminal and run:
 
 ```bash
-curl -X POST https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/ \
+curl -X POST http://localhost:8080/ \
   -H "Content-Type: application/json" \
   -d '{
     "userUUID": "YOUR_USER_UUID",
@@ -123,32 +82,22 @@ curl -X POST https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/ \
 
 Expected response:
 ```json
-{ "ok": true, "path": "learn-go/variables-and-types/creating-variables.go", "commit": "feat(learn-go): creating-variables" }
+{ "ok": true, "commit": "feat(learn-go): creating-variables" }
 ```
 
-Check the repo — a new file should appear within seconds.
-
-If you get an error, check:
-- CF dashboard → Worker → Logs (real-time logs available under "Observability")
-- The env vars are set correctly
+Check your local `bootdev` repo — a new file should appear and a commit should be created.
 
 ### Test the full flow
 
-1. Open boot.dev in the browser with Tampermonkey enabled
-2. Open devtools → Console tab
-3. Solve and **submit** (not just run) a lesson until it passes
-4. Watch the console for:
+1. Make sure your local Go daemon is running.
+2. Open boot.dev in the browser with Tampermonkey enabled.
+3. Open devtools → Console tab.
+4. Solve and **submit** (not just run) a lesson until it passes.
+5. Watch the console for:
    ```
    [bootdev→gh] feat(learn-go): your-lesson-title
    ```
-5. Check the repo for the new commit
-
-### If nothing happens
-
-- Make sure you hit **submit** not just **run** — the hook fires on the submit endpoint, not lessonRun
-- Check Tampermonkey dashboard → the script should show as "enabled" on boot.dev
-- Check console for `[bootdev→gh] error` messages
-- Check CF worker logs for incoming requests
+6. Check your local repo for the new commit.
 
 ---
 
@@ -160,26 +109,11 @@ The `bootdev` CLI can also auto-commit via a shell wrapper. See the [CLI install
 
 **Setup:**
 ```zsh
-# Export these before installing the wrapper
-export WORKER_URL="https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/"
-export USER_UUID="your-boot-dot-uuid-here"
-
-# Install the wrapper
+# Install the wrapper (defaults to http://localhost:8080/)
 zsh cli/install.sh
 
 # Reload your shell
 source ~/.config/zsh/bootdev-wrap.zsh
 ```
 
-The wrapper resolves lesson metadata (course/chapter/lesson title, language) automatically from the boot.dev API using your CLI's stored auth token.
-
----
-
-## files
-
-| File | Purpose |
-|---|---|
-| `bootdev-worker.js` | Cloudflare Worker source — deploy this |
-| `bootdev.user.js` | Tampermonkey script — install in browser |
-| `cli/install.sh` | CLI wrapper installer (optional) |
-| `README.md` | This file |
+The wrapper resolves lesson metadata automatically from the boot.dev API using your CLI's stored auth token, and sends it to your local daemon.

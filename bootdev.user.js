@@ -10,8 +10,8 @@
 (function () {
   "use strict";
 
-  // ← paste your CF worker URL here
-  const WORKER_URL = "https://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev/";
+  // ← local Go daemon URL
+  const WORKER_URL = "http://localhost:8080/";
 
   // cache code from lessonRun keyed by lessonUUID
   const codeCache = {};
