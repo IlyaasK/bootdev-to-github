@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         bootdev → github commits
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.5
 // @match        https://www.boot.dev/*
 // @grant        none
 // @run-at       document-start
@@ -10,18 +10,14 @@
 (function () {
   "use strict";
 
-  console.log("[bootdev→gh] script v2.4 loaded");
+  console.log("[bootdev→gh] script v2.5 loaded");
 
-  // ← local Go daemon URL
   const WORKER_URL = "http://localhost:8080/";
 
-  // cache code from lessonRun keyed by lessonUUID
-  const codeCache = {};
-
-  // save original fetch BEFORE wrapping
+  // Save original fetch BEFORE any page code can touch it
   const origFetch = window.fetch.bind(window);
 
-  // dedupe guard: prevent double-commits if both XHR and fetch fire
+  // Dedupe guard
   const lastFired = new Map();
   const DEDUPE_WINDOW_MS = 10_000;
 
@@ -29,48 +25,40 @@
     if (!lessonUUID) return false;
     const now = Date.now();
     const last = lastFired.get(lessonUUID);
-    if (last !== undefined && now - last < DEDUPE_WINDOW_MS) {
-      return true;
-    }
+    if (last !== undefined && now - last < DEDUPE_WINDOW_MS) return true;
     lastFired.set(lessonUUID, now);
     return false;
   }
 
   // ─── fetch() intercept ───
+  // Note: code is in the SUBMIT request body (files[]), not in lessonRun
   window.fetch = function (...args) {
     const url = typeof args[0] === "string" ? args[0] : args[0]?.url || "";
     const method = (args[1]?.method || "GET").toUpperCase();
 
-    // intercept lessonRun → cache code
-    if (method === "POST" && url.includes("/v1/lessonRun")) {
-      if (args[1]?.body) {
-        try {
-          const data = JSON.parse(args[1].body);
-          const lessonUUID = data?.lessonRun?.lessonUUID;
-          const files = data?.files;
-          if (lessonUUID && files) {
-            const mainFile = files.find(f => f.Name === "main.go") || files[0];
-            if (mainFile) {
-              codeCache[lessonUUID] = mainFile.Content;
-              console.log(`[bootdev→gh] cached code for ${lessonUUID}`);
-            }
-          }
-        } catch {}
-      }
-    }
+    if (method === "POST" && /\/v1\/lessons\/[^/]+\/$/.test(url)) {
+      // Extract code directly from the submit request body
+      let filesFromReq = null;
+      try {
+        const data = JSON.parse(args[1]?.body || "{}");
+        if (Array.isArray(data.files) && data.files.length > 0) {
+          filesFromReq = data.files;
+        }
+      } catch {}
 
-    return origFetch.apply(window, args).then((response) => {
-      if (method === "POST" && /\/v1\/lessons\/[^/]+\/$/.test(url)) {
+      return origFetch.apply(window, args).then((response) => {
         const clone = response.clone();
         clone.json().then((res) => {
           if (res.ResultSlug === "success") {
-            console.log("[bootdev→gh] fetch submit success");
-            handleSubmitSuccess(res);
+            console.log("[bootdev→gh] fetch: success for", res.LessonUUID);
+            handleSubmitSuccess(res, filesFromReq);
           }
         }).catch(() => {});
-      }
-      return response;
-    });
+        return response;
+      });
+    }
+
+    return origFetch.apply(window, args);
   };
 
   // ─── XHR intercept ───
@@ -87,30 +75,21 @@
     const url = this._url || "";
     const method = this._method || "";
 
-    // intercept lessonRun → cache code
-    if (method === "POST" && url.includes("/v1/lessonRun")) {
+    if (method === "POST" && /\/v1\/lessons\/[^/]+\/$/.test(url)) {
+      let filesFromReq = null;
       try {
         const data = JSON.parse(body);
-        const lessonUUID = data?.lessonRun?.lessonUUID;
-        const files = data?.files;
-        if (lessonUUID && files) {
-          const mainFile = files.find(f => f.Name === "main.go") || files[0];
-          if (mainFile) {
-            codeCache[lessonUUID] = mainFile.Content;
-            console.log(`[bootdev→gh] XHR cached code for ${lessonUUID}`);
-          }
+        if (Array.isArray(data.files) && data.files.length > 0) {
+          filesFromReq = data.files;
         }
       } catch {}
-    }
 
-    // intercept lesson submit → fire on success
-    if (method === "POST" && /\/v1\/lessons\/[^/]+\/$/.test(url)) {
       this.addEventListener("load", function () {
         try {
           const res = JSON.parse(this.responseText);
           if (res.ResultSlug === "success") {
-            console.log("[bootdev→gh] XHR submit success");
-            handleSubmitSuccess(res);
+            console.log("[bootdev→gh] XHR: success for", res.LessonUUID);
+            handleSubmitSuccess(res, filesFromReq);
           }
         } catch {}
       });
@@ -119,22 +98,20 @@
     return origSend.call(this, body);
   };
 
-  // ─── shared submit success handler ───
-  async function handleSubmitSuccess(res) {
-    const lessonUUID = res.LessonUUID;
-    const courseUUID = res.CourseUUID;
-    const userUUID = res.UserUUID;
-
+  // ─── submit handler ───
+  async function handleSubmitSuccess(res, filesFromReq) {
+    const { LessonUUID: lessonUUID, CourseUUID: courseUUID, UserUUID: userUUID } = res;
     if (isDeduped(lessonUUID)) return;
-
-    console.log(`[bootdev→gh] handling success for ${lessonUUID}`);
-
-    const cachedCode = codeCache[lessonUUID];
 
     const postBody = { userUUID, lessonUUID, courseUUID };
 
-    if (cachedCode && cachedCode !== "// no code captured") {
-      postBody.code = cachedCode;
+    if (filesFromReq && filesFromReq.length > 0) {
+      const mainFile =
+        filesFromReq.find(f => f.Name === "main.go") ||
+        filesFromReq.find(f => f.Name === "main.js") ||
+        filesFromReq.find(f => f.Name === "main.py") ||
+        filesFromReq[0];
+      postBody.code = mainFile.Content;
     } else {
       postBody.kind = "progress";
     }
@@ -144,10 +121,12 @@
       console.log(`[bootdev→gh] skipped: metadata fetch failed for ${lessonUUID}`);
       return;
     }
-    postBody.courseTitle = meta.courseTitle;
-    postBody.chapterTitle = meta.chapterTitle;
-    postBody.lessonTitle = meta.lessonTitle;
-    postBody.courseLanguage = meta.courseLanguage;
+    Object.assign(postBody, {
+      courseTitle: meta.courseTitle,
+      chapterTitle: meta.chapterTitle,
+      lessonTitle: meta.lessonTitle,
+      courseLanguage: meta.courseLanguage,
+    });
 
     console.log(`[bootdev→gh] posting: ${meta.courseTitle} / ${meta.lessonTitle}`);
 
@@ -161,23 +140,20 @@
       .catch(e => console.error("[bootdev→gh] daemon error", e));
   }
 
-  // ─── fetch lesson metadata ───
+  // ─── metadata fetch ───
   async function getLessonMetadata(lessonUUID) {
     try {
-      const response = await origFetch(`https://api.boot.dev/v1/static/lessons/${lessonUUID}`);
-      if (!response.ok) {
-        console.warn(`[bootdev→gh] metadata ${response.status} for ${lessonUUID}`);
-        return null;
-      }
-      const data = await response.json();
+      const r = await origFetch(`https://api.boot.dev/v1/static/lessons/${lessonUUID}`);
+      if (!r.ok) { console.warn(`[bootdev→gh] metadata ${r.status}`); return null; }
+      const d = await r.json();
       return {
-        courseTitle: data.CourseTitle,
-        chapterTitle: data.ChapterTitle,
-        lessonTitle: data.Title,
-        courseLanguage: data.CourseLanguage,
+        courseTitle: d.CourseTitle,
+        chapterTitle: d.ChapterTitle,
+        lessonTitle: d.Title,
+        courseLanguage: d.CourseLanguage,
       };
     } catch (e) {
-      console.warn(`[bootdev→gh] metadata failed:`, e.message);
+      console.warn("[bootdev→gh] metadata failed:", e.message);
       return null;
     }
   }
