@@ -56,6 +56,12 @@ func slugify(s string) string {
 	return strings.Trim(slug, "-")
 }
 
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"ok": "false", "error": msg})
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -88,24 +94,24 @@ func main() {
 		}
 
 		if r.Method != "POST" {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
+			jsonError(w, "bad request", http.StatusBadRequest)
 			return
 		}
 
 		var payload Payload
 		if err := json.Unmarshal(body, &payload); err != nil {
-			http.Error(w, "bad json", http.StatusBadRequest)
+			jsonError(w, "bad json", http.StatusBadRequest)
 			return
 		}
 
 		if payload.CourseTitle == "" || payload.ChapterTitle == "" || payload.LessonTitle == "" {
-			http.Error(w, "missing required metadata fields", http.StatusBadRequest)
+			jsonError(w, "missing required metadata fields", http.StatusBadRequest)
 			return
 		}
 
@@ -123,12 +129,12 @@ func main() {
 			commitMsg = fmt.Sprintf("progress(%s): %s", courseSlug, payload.LessonTitle)
 
 			if err := writeFile(filePath, mdContent); err != nil {
-				http.Error(w, fmt.Sprintf("fs error: %v", err), http.StatusInternalServerError)
+				jsonError(w, fmt.Sprintf("fs error: %v", err), http.StatusInternalServerError)
 				return
 			}
 		} else {
 			if payload.Code == "" && len(payload.Files) == 0 {
-				http.Error(w, "no code or files provided, skipping commit", http.StatusBadRequest)
+				jsonError(w, "no code or files provided", http.StatusBadRequest)
 				return
 			}
 
@@ -145,7 +151,7 @@ func main() {
 				for _, f := range payload.Files {
 					fPath := filepath.Join(targetDir, courseSlug, chapterSlug, lessonSlug, f.Path)
 					if err := writeFile(fPath, f.Content); err != nil {
-						http.Error(w, fmt.Sprintf("fs error on %s: %v", fPath, err), http.StatusInternalServerError)
+						jsonError(w, fmt.Sprintf("fs error on %s: %v", fPath, err), http.StatusInternalServerError)
 						return
 					}
 				}
@@ -155,7 +161,7 @@ func main() {
 					logName := fmt.Sprintf("%s-%s.log", lessonSlug, timestamp)
 					logPath := filepath.Join(targetDir, courseSlug, chapterSlug, ".cli-logs", logName)
 					if err := writeFile(logPath, payload.CliLog); err != nil {
-						http.Error(w, fmt.Sprintf("fs error on log: %v", err), http.StatusInternalServerError)
+						jsonError(w, fmt.Sprintf("fs error on log: %v", err), http.StatusInternalServerError)
 						return
 					}
 				}
@@ -167,7 +173,7 @@ func main() {
 				commitMsg = fmt.Sprintf("feat(%s): %s", courseSlug, payload.LessonTitle)
 
 				if err := writeFile(filePath, payload.Code); err != nil {
-					http.Error(w, fmt.Sprintf("fs error: %v", err), http.StatusInternalServerError)
+					jsonError(w, fmt.Sprintf("fs error: %v", err), http.StatusInternalServerError)
 					return
 				}
 			}
@@ -175,7 +181,7 @@ func main() {
 
 		if err := commitAndPush(targetDir, commitMsg); err != nil {
 			log.Printf("Git error: %v", err)
-			http.Error(w, fmt.Sprintf("git error: %v", err), http.StatusInternalServerError)
+			jsonError(w, fmt.Sprintf("git error: %v", err), http.StatusInternalServerError)
 			return
 		}
 

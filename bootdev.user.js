@@ -1,24 +1,16 @@
 // ==UserScript==
 // @name         bootdev → github commits
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @match        https://www.boot.dev/*
-// @grant        GM_xmlhttpRequest
-// @grant        unsafeWindow
-// @connect      localhost
+// @grant        none
 // @run-at       document-start
 // ==/UserScript==
 
 (function () {
   "use strict";
 
-  console.log("[bootdev→gh] script v2.2 loaded");
-
-  // With @grant directives, 'window' is Tampermonkey's sandbox — NOT the page's window.
-  // We must use unsafeWindow to patch the page's actual XHR and fetch.
-  // Fall back to window if unsafeWindow is not available.
-  const pageWindow = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
-  console.log("[bootdev→gh] pageWindow source:", (typeof unsafeWindow !== "undefined") ? "unsafeWindow" : "window (fallback)");
+  console.log("[bootdev→gh] script v2.4 loaded");
 
   // ← local Go daemon URL
   const WORKER_URL = "http://localhost:8080/";
@@ -26,8 +18,8 @@
   // cache code from lessonRun keyed by lessonUUID
   const codeCache = {};
 
-  // save original page fetch BEFORE wrapping
-  const origFetch = pageWindow.fetch.bind(pageWindow);
+  // save original fetch BEFORE wrapping
+  const origFetch = window.fetch.bind(window);
 
   // dedupe guard: prevent double-commits if both XHR and fetch fire
   const lastFired = new Map();
@@ -45,7 +37,7 @@
   }
 
   // ─── fetch() intercept ───
-  pageWindow.fetch = function (...args) {
+  window.fetch = function (...args) {
     const url = typeof args[0] === "string" ? args[0] : args[0]?.url || "";
     const method = (args[1]?.method || "GET").toUpperCase();
 
@@ -60,17 +52,19 @@
             const mainFile = files.find(f => f.Name === "main.go") || files[0];
             if (mainFile) {
               codeCache[lessonUUID] = mainFile.Content;
+              console.log(`[bootdev→gh] cached code for ${lessonUUID}`);
             }
           }
         } catch {}
       }
     }
 
-    return origFetch.apply(pageWindow, args).then((response) => {
+    return origFetch.apply(window, args).then((response) => {
       if (method === "POST" && /\/v1\/lessons\/[^/]+\/$/.test(url)) {
         const clone = response.clone();
         clone.json().then((res) => {
           if (res.ResultSlug === "success") {
+            console.log("[bootdev→gh] fetch submit success");
             handleSubmitSuccess(res);
           }
         }).catch(() => {});
@@ -80,16 +74,16 @@
   };
 
   // ─── XHR intercept ───
-  const origOpen = pageWindow.XMLHttpRequest.prototype.open;
-  const origSend = pageWindow.XMLHttpRequest.prototype.send;
+  const origOpen = XMLHttpRequest.prototype.open;
+  const origSend = XMLHttpRequest.prototype.send;
 
-  pageWindow.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     this._method = method;
     this._url = url;
     return origOpen.call(this, method, url, ...rest);
   };
 
-  pageWindow.XMLHttpRequest.prototype.send = function (body) {
+  XMLHttpRequest.prototype.send = function (body) {
     const url = this._url || "";
     const method = this._method || "";
 
@@ -103,6 +97,7 @@
           const mainFile = files.find(f => f.Name === "main.go") || files[0];
           if (mainFile) {
             codeCache[lessonUUID] = mainFile.Content;
+            console.log(`[bootdev→gh] XHR cached code for ${lessonUUID}`);
           }
         }
       } catch {}
@@ -114,6 +109,7 @@
         try {
           const res = JSON.parse(this.responseText);
           if (res.ResultSlug === "success") {
+            console.log("[bootdev→gh] XHR submit success");
             handleSubmitSuccess(res);
           }
         } catch {}
@@ -131,15 +127,11 @@
 
     if (isDeduped(lessonUUID)) return;
 
-    console.log(`[bootdev→gh] success intercepted for ${lessonUUID}`);
+    console.log(`[bootdev→gh] handling success for ${lessonUUID}`);
 
     const cachedCode = codeCache[lessonUUID];
 
-    const postBody = {
-      userUUID,
-      lessonUUID,
-      courseUUID,
-    };
+    const postBody = { userUUID, lessonUUID, courseUUID };
 
     if (cachedCode && cachedCode !== "// no code captured") {
       postBody.code = cachedCode;
@@ -147,7 +139,6 @@
       postBody.kind = "progress";
     }
 
-    // Fetch metadata via same-origin authenticated fetch
     const meta = await getLessonMetadata(lessonUUID);
     if (!meta) {
       console.log(`[bootdev→gh] skipped: metadata fetch failed for ${lessonUUID}`);
@@ -158,37 +149,26 @@
     postBody.lessonTitle = meta.lessonTitle;
     postBody.courseLanguage = meta.courseLanguage;
 
-    console.log(`[bootdev→gh] posting to daemon: ${meta.courseTitle} / ${meta.lessonTitle}`);
+    console.log(`[bootdev→gh] posting: ${meta.courseTitle} / ${meta.lessonTitle}`);
 
-    // GM_xmlhttpRequest bypasses browser Local Network Access blocking
-    GM_xmlhttpRequest({
+    origFetch(WORKER_URL, {
       method: "POST",
-      url: WORKER_URL,
       headers: { "Content-Type": "application/json" },
-      data: JSON.stringify(postBody),
-      onload: (r) => {
-        try {
-          const d = JSON.parse(r.responseText);
-          console.log("[bootdev→gh]", d.commit || d);
-        } catch {
-          console.error("[bootdev→gh] bad response", r.responseText);
-        }
-      },
-      onerror: (e) => console.error("[bootdev→gh] request failed", e),
-    });
+      body: JSON.stringify(postBody),
+    })
+      .then(r => r.json())
+      .then(d => console.log("[bootdev→gh]", d.commit || d))
+      .catch(e => console.error("[bootdev→gh] daemon error", e));
   }
 
-  // ─── fetch lesson metadata from boot.dev API ───
+  // ─── fetch lesson metadata ───
   async function getLessonMetadata(lessonUUID) {
     try {
-      const url = `https://api.boot.dev/v1/static/lessons/${lessonUUID}`;
-      const response = await origFetch(url);
-
+      const response = await origFetch(`https://api.boot.dev/v1/static/lessons/${lessonUUID}`);
       if (!response.ok) {
-        console.warn(`[bootdev→gh] metadata fetch non-2xx: ${response.status}`);
+        console.warn(`[bootdev→gh] metadata ${response.status} for ${lessonUUID}`);
         return null;
       }
-
       const data = await response.json();
       return {
         courseTitle: data.CourseTitle,
@@ -197,7 +177,7 @@
         courseLanguage: data.CourseLanguage,
       };
     } catch (e) {
-      console.warn(`[bootdev→gh] metadata fetch failed:`, e.message);
+      console.warn(`[bootdev→gh] metadata failed:`, e.message);
       return null;
     }
   }
