@@ -12,9 +12,13 @@
 (function () {
   "use strict";
 
+  console.log("[bootdev→gh] script v2.2 loaded");
+
   // With @grant directives, 'window' is Tampermonkey's sandbox — NOT the page's window.
   // We must use unsafeWindow to patch the page's actual XHR and fetch.
-  const pageWindow = unsafeWindow;
+  // Fall back to window if unsafeWindow is not available.
+  const pageWindow = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
+  console.log("[bootdev→gh] pageWindow source:", (typeof unsafeWindow !== "undefined") ? "unsafeWindow" : "window (fallback)");
 
   // ← local Go daemon URL
   const WORKER_URL = "http://localhost:8080/";
