@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         bootdev → github commits
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @match        https://www.boot.dev/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      localhost
 // @run-at       document-start
 // ==/UserScript==
 
@@ -153,14 +154,23 @@
     postBody.lessonTitle = meta.lessonTitle;
     postBody.courseLanguage = meta.courseLanguage;
 
-    origFetchRef(WORKER_URL, {
+    // Use GM_xmlhttpRequest to bypass Firefox Local Network Access blocking
+    // (fetch from https://boot.dev to http://localhost is blocked by the browser)
+    GM_xmlhttpRequest({
       method: "POST",
+      url: WORKER_URL,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(postBody),
-    })
-      .then(r => r.json())
-      .then(d => console.log("[bootdev→gh]", d.commit || d))
-      .catch(e => console.error("[bootdev→gh] error", e));
+      data: JSON.stringify(postBody),
+      onload: (res) => {
+        try {
+          const d = JSON.parse(res.responseText);
+          console.log("[bootdev→gh]", d.commit || d);
+        } catch {
+          console.error("[bootdev→gh] bad response", res.responseText);
+        }
+      },
+      onerror: (e) => console.error("[bootdev→gh] request failed", e),
+    });
   }
 
   // ─── fetch lesson metadata from boot.dev same-origin API (ticket 04, option A) ───
