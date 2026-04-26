@@ -69,7 +69,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to get cwd: %v", err)
 		}
-		targetDir = filepath.Join(filepath.Dir(cwd), "bootdev")
+		targetDir = filepath.Join(filepath.Dir(filepath.Dir(cwd)), "bootdev")
 	}
 
 	// Ensure target dir exists
