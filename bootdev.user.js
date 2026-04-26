@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         bootdev → github commits
 // @namespace    http://tampermonkey.net/
-// @version      2.5
+// @version      2.6
 // @match        https://www.boot.dev/*
 // @grant        none
 // @run-at       document-start
@@ -10,7 +10,7 @@
 (function () {
   "use strict";
 
-  console.log("[bootdev→gh] script v2.5 loaded");
+  console.log("[bootdev→gh] script v2.6 loaded");
 
   const WORKER_URL = "http://localhost:8080/";
 
@@ -143,15 +143,23 @@
   // ─── metadata fetch ───
   async function getLessonMetadata(lessonUUID) {
     try {
-      const r = await origFetch(`https://api.boot.dev/v1/static/lessons/${lessonUUID}`);
+      const r = await origFetch(`https://api.boot.dev/v1/static/lessons/${lessonUUID}`, {
+        credentials: "include",  // send auth cookies cross-origin
+      });
       if (!r.ok) { console.warn(`[bootdev→gh] metadata ${r.status}`); return null; }
       const d = await r.json();
-      return {
+      const meta = {
         courseTitle: d.CourseTitle,
         chapterTitle: d.ChapterTitle,
         lessonTitle: d.Title,
         courseLanguage: d.CourseLanguage,
       };
+      // Validate all fields are non-empty strings
+      if (!meta.courseTitle || !meta.chapterTitle || !meta.lessonTitle) {
+        console.warn("[bootdev→gh] metadata fields missing:", d);
+        return null;
+      }
+      return meta;
     } catch (e) {
       console.warn("[bootdev→gh] metadata failed:", e.message);
       return null;
